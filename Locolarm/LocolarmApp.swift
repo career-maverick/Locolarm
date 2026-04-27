@@ -8,6 +8,7 @@
 import SwiftUI
 
 @main
+/// App entry point that loads the main location alarm screen.
 struct LocolarmApp: App {
     var body: some Scene {
         WindowGroup {

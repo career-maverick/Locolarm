@@ -10,7 +10,7 @@ Set a destination on the map, confirm it, arm the alarm, and get alerted when yo
 - Configure arrival radius from 100 m to 5000 m.
 - Quick places for Home, Work, and custom saved places.
 - Alarm workflow with arm, ring, snooze, dismiss, and reset.
-- Distance display in metric or imperial units.
+- Road distance display in metric or imperial units (Apple Maps route distance).
 - Alarm tone selection with bundled tones and system fallback sounds.
 - Background location monitoring with geofence support.
 - Power saver mode that uses geofence-only tracking.
@@ -37,6 +37,7 @@ Set a destination on the map, confirm it, arm the alarm, and get alerted when yo
 ## Requirements
 
 - macOS with Xcode installed.
+- iOS 26.0 or later (deployment target/runtime requirement).
 - iOS device recommended for full background/location behavior.
 - Apple Developer account for signing on physical devices.
 
@@ -68,6 +69,12 @@ If location permission is denied or limited, alarm reliability is reduced.
 4. Turn on the alarm toggle.
 5. Keep the app permissions enabled and travel to the destination area.
 6. Snooze or dismiss when the alarm rings.
+
+## Distance Behavior
+
+- The app shows **road distance remaining** based on Apple Maps routing, not straight-line distance.
+- Route distance is refreshed periodically as your location changes.
+- If routing is temporarily unavailable, the app briefly falls back to straight-line distance until a route is available again.
 
 ## Current Status
 

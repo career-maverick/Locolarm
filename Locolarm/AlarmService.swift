@@ -4,15 +4,18 @@ import Combine
 import Foundation
 import UserNotifications
 
+/// Handles alarm sound playback, snooze lifecycle, and arrival notifications.
 final class AlarmService: ObservableObject {
     static let shared = AlarmService()
 
+    /// Selectable alarm tone identifiers exposed in settings.
     enum ToneID: String, CaseIterable {
         case systemDefault
         case toneBeacon
         case tonePulse
         case toneEcho
 
+        /// User-facing tone name.
         var displayName: String {
             switch self {
             case .systemDefault: return "System Default"
@@ -22,6 +25,7 @@ final class AlarmService: ObservableObject {
             }
         }
 
+        /// Optional bundled audio filename for looped playback.
         var bundledFilename: String? {
             switch self {
             case .systemDefault:
@@ -35,6 +39,7 @@ final class AlarmService: ObservableObject {
             }
         }
 
+        /// Fallback system sound used when bundled file is unavailable.
         var fallbackSystemSoundID: SystemSoundID {
             switch self {
             case .systemDefault: return 1007
@@ -45,6 +50,7 @@ final class AlarmService: ObservableObject {
         }
     }
 
+    /// Public alarm state consumed by UI.
     enum State: Equatable {
         case idle
         case ringing
@@ -60,31 +66,37 @@ final class AlarmService: ObservableObject {
 
     private init() {}
 
+    /// Requests notification permission needed for arrival alerts.
     func requestNotificationPermission() {
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
+    /// Starts ringing flow when the user is detected at destination.
     func triggerArrivalAlarm(destinationName: String) {
         state = .ringing
         startBeepingLoop()
         scheduleArrivalNotification(destinationName: destinationName)
     }
 
+    /// Updates the active tone selection.
     func setTone(_ tone: ToneID) {
         selectedTone = tone
     }
 
+    /// Stops ringing and returns service to idle.
     func dismissAlarm() {
         stopBeepingLoop()
         state = .idle
     }
 
+    /// Silences current alarm and marks snooze-until timestamp.
     func snooze(minutes: Int = 5) {
         stopBeepingLoop()
         let until = Date().addingTimeInterval(TimeInterval(minutes * 60))
         state = .snoozed(until: until)
     }
 
+    /// Starts a repeating alarm sound loop via bundled audio or system sounds.
     private func startBeepingLoop() {
         stopBeepingLoop()
 
@@ -99,6 +111,7 @@ final class AlarmService: ObservableObject {
         }
     }
 
+    /// Stops any repeating audio resources used by the alarm.
     private func stopBeepingLoop() {
         beepTimer?.invalidate()
         beepTimer = nil
@@ -106,6 +119,7 @@ final class AlarmService: ObservableObject {
         audioPlayer = nil
     }
 
+    /// Schedules a local notification to surface arrival even in background.
     private func scheduleArrivalNotification(destinationName: String) {
         let content = UNMutableNotificationContent()
         content.title = "Locolarm"
@@ -121,6 +135,7 @@ final class AlarmService: ObservableObject {
         center.add(request)
     }
 
+    /// Attempts continuous playback using a bundled tone file.
     private func startBundledLoopPlaybackIfPossible() -> Bool {
         guard let filename = selectedTone.bundledFilename else { return false }
         guard let url = Bundle.main.url(forResource: filename, withExtension: nil) else { return false }
@@ -142,6 +157,7 @@ final class AlarmService: ObservableObject {
         }
     }
 
+    /// Resolves the notification sound for the currently selected tone.
     private func notificationSound(for tone: ToneID) -> UNNotificationSound {
         guard let filename = tone.bundledFilename else { return .default }
         guard Bundle.main.url(forResource: filename, withExtension: nil) != nil else { return .default }

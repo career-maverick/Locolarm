@@ -4,7 +4,9 @@ import MapKit
 import Combine
 
 @MainActor
+/// Coordinates destination selection, alarm lifecycle, persistence, and UI state.
 final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
+    /// Outcome returned when user taps one of the quick-place chips.
     enum QuickPlaceSelectionResult: Equatable {
         case used
         case needsHomeSetup
@@ -12,6 +14,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         case noAction
     }
 
+    /// Indicates which quick place is waiting to be saved from selected destination.
     enum PendingQuickPlaceSave: Equatable {
         case home
         case work
@@ -24,6 +27,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Quick place chips displayed in UI.
     enum QuickPlace: String, CaseIterable, Identifiable {
         case home
         case work
@@ -42,6 +46,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Unit system used when formatting distance values for display.
     enum DistanceUnitSystem: String, CaseIterable, Identifiable {
         case metric
         case imperial
@@ -100,6 +105,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
     private var lastAppliedPowerSaverMode = false
     private let completer = MKLocalSearchCompleter()
 
+    /// Configures services, restores persisted state, and starts observers.
     override init() {
         self.locationService = .shared
         self.alarmService = .shared
@@ -123,12 +129,14 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         bindObservers()
     }
 
+    /// Cancels running async observer tasks.
     deinit {
         observerTask?.cancel()
         snoozeTask?.cancel()
         autocompleteTask?.cancel()
     }
 
+    /// Resolves an autocomplete result into a concrete map item.
     func resolveCompletion(_ completion: MKLocalSearchCompletion) async -> MKMapItem? {
         isSearching = true
         defer { isSearching = false }
@@ -151,20 +159,24 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Uses a searched map item as the selected destination.
     func useSearchResult(_ item: MKMapItem) {
+        let coordinate = item.resolvedCoordinate
+
         let destination = Destination(
             name: item.name ?? "Pinned Destination",
-            latitude: item.placemark.coordinate.latitude,
-            longitude: item.placemark.coordinate.longitude,
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude,
             radiusMeters: radiusMeters
         )
         selectedDestination = destination
         isDestinationConfirmed = false
         statusText = "Selected \(destination.name)"
-        query = item.name ?? item.placemark.title ?? destination.name
+        query = item.resolvedTitleFallback ?? item.name ?? destination.name
         completionResults = []
     }
 
+    /// Uses current map center coordinate as selected destination.
     func usePinnedCoordinate(_ coordinate: CLLocationCoordinate2D) {
         let destination = Destination(
             name: "Pinned Destination",
@@ -177,6 +189,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         statusText = "Pinned destination selected."
     }
 
+    /// Locks currently selected destination so alarm can be armed.
     func confirmDestination() {
         guard let selectedDestination else {
             statusText = "Select a destination first."
@@ -186,6 +199,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         statusText = "Destination locked: \(selectedDestination.name)"
     }
 
+    /// Arms the location alarm using current destination and settings.
     func armAlarm() {
         guard var destination = selectedDestination else {
             statusText = "Select a destination first."
@@ -208,6 +222,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         persistActiveAlarm(destination)
     }
 
+    /// Disarms monitoring and clears active alarm state.
     func disarmAlarm() {
         locationService.disarm()
         alarmService.dismissAlarm()
@@ -217,6 +232,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         clearActiveAlarm()
     }
 
+    /// Selects one of the persisted places and resets confirmation.
     func useSavedPlace(_ place: Destination) {
         selectedDestination = place
         isDestinationConfirmed = false
@@ -225,6 +241,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         statusText = "Selected saved place: \(place.name)"
     }
 
+    /// Snoozes ringing alarm and automatically re-arms after delay.
     func snoozeAlarm(minutes: Int = 5) {
         alarmService.snooze(minutes: minutes)
         statusText = "Snoozed for \(minutes) minutes."
@@ -237,17 +254,20 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Dismisses active alarm and fully disarms tracking.
     func dismissAlarm() {
         alarmService.dismissAlarm()
         disarmAlarm()
     }
 
+    /// Handles arrival callback by triggering alarm service.
     private func handleArrival() {
         guard let destination = selectedDestination else { return }
         alarmService.triggerArrivalAlarm(destinationName: destination.name)
         statusText = "Arrived near \(destination.name). Alarm started."
     }
 
+    /// Re-arms destination tracking after snooze period finishes.
     private func rearmAfterSnooze() {
         guard let destination = selectedDestination else { return }
         locationService.arm(destination: destination, usePowerSaverOnly: effectivePowerSaverMode)
@@ -256,6 +276,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         statusText = "Snooze ended. Alarm re-armed."
     }
 
+    /// Subscribes to service publishers and mirrors them into view state.
     private func bindObservers() {
         observerTask = Task { [weak self] in
             guard let self else { return }
@@ -302,27 +323,33 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Title text for a search completion row.
     func completionTitle(_ completion: MKLocalSearchCompletion) -> String {
         completion.title.isEmpty ? completion.subtitle : completion.title
     }
 
+    /// Subtitle text for a search completion row.
     func completionSubtitle(_ completion: MKLocalSearchCompletion) -> String {
         completion.title.isEmpty ? "" : completion.subtitle
     }
 
+    /// Formatted arrival radius display string.
     var radiusDisplayText: String {
         formatDistance(meters: radiusMeters)
     }
 
+    /// Formatted remaining-distance text if distance is available.
     var distanceRemainingDisplayText: String? {
         guard let distanceRemaining else { return nil }
         return formatDistance(meters: distanceRemaining)
     }
 
+    /// Alarm tones user can choose from in settings.
     var availableTones: [AlarmService.ToneID] {
         AlarmService.ToneID.allCases
     }
 
+    /// Most recently used custom place, if any.
     var recentCustomPlace: CustomPlace? {
         customPlaces
             .filter { $0.lastUsedAt != nil }
@@ -330,6 +357,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
             .first
     }
 
+    /// Ordered quick-place chips to render.
     var quickPlaces: [QuickPlace] {
         var result: [QuickPlace] = [.home, .work]
         if recentCustomPlace != nil { result.append(.recentCustom) }
@@ -337,29 +365,35 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         return result
     }
 
+    /// True when Home is configured with a real destination.
     var isHomeSet: Bool {
         !isPlaceholderSavedPlace(homePlace, quickPlace: .home)
     }
 
+    /// True when Work is configured with a real destination.
     var isWorkSet: Bool {
         !isPlaceholderSavedPlace(workPlace, quickPlace: .work)
     }
 
+    /// Label for pending quick-place save action, if any.
     var pendingQuickPlaceSaveLabel: String? {
         pendingQuickPlaceSave?.displayName
     }
 
+    /// Persists selected distance unit system.
     func updateDistanceUnitSystem(_ newValue: DistanceUnitSystem) {
         distanceUnitSystem = newValue
         UserDefaults.standard.set(newValue.rawValue, forKey: settingsDistanceUnitKey)
     }
 
+    /// Persists selected alarm tone and applies it immediately.
     func updateSelectedToneID(_ newTone: AlarmService.ToneID) {
         selectedToneID = newTone
         UserDefaults.standard.set(newTone.rawValue, forKey: settingsToneIDKey)
         alarmService.setTone(newTone)
     }
 
+    /// Handles quick-place taps and returns resulting action status.
     func useQuickPlace(_ quickPlace: QuickPlace) -> QuickPlaceSelectionResult {
         switch quickPlace {
         case .home:
@@ -389,6 +423,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Saves selected destination as Home.
     func setHomeFromSelectedDestination() {
         guard let selectedDestination else { return }
         homePlace = renamedDestination(selectedDestination, name: "Home")
@@ -399,6 +434,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         statusText = "Home updated."
     }
 
+    /// Saves selected destination as Work.
     func setWorkFromSelectedDestination() {
         guard let selectedDestination else { return }
         workPlace = renamedDestination(selectedDestination, name: "Work")
@@ -409,6 +445,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         statusText = "Work updated."
     }
 
+    /// Completes pending Home/Work save action.
     func savePendingQuickPlaceFromSelectedDestination() {
         guard let pendingQuickPlaceSave else { return }
         switch pendingQuickPlaceSave {
@@ -419,6 +456,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Adds selected destination as a labeled custom place.
     func addCustomPlaceFromSelectedDestination(label: String) {
         guard let selectedDestination else { return }
         let trimmed = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(10))
@@ -433,6 +471,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         statusText = "Custom place \(trimmed) added."
     }
 
+    /// Renames a custom place and its destination label.
     func updateCustomPlaceLabel(id: UUID, label: String) {
         let trimmed = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(10))
         guard !trimmed.isEmpty else { return }
@@ -442,11 +481,13 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         persistPlaces()
     }
 
+    /// Deletes a custom place by id.
     func deleteCustomPlace(id: UUID) {
         customPlaces.removeAll { $0.id == id }
         persistPlaces()
     }
 
+    /// Selects custom place and marks it as recently used.
     func useCustomPlace(_ id: UUID) {
         guard let idx = customPlaces.firstIndex(where: { $0.id == id }) else { return }
         customPlaces[idx].lastUsedAt = .now
@@ -455,6 +496,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         useSavedPlace(renamedDestination(place.destination, name: place.label))
     }
 
+    /// Clears armed alarm, selected destination, and transient UI state.
     func resetAlarmAndTarget() {
         disarmAlarm()
         selectedDestination = nil
@@ -466,6 +508,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         statusText = "Reset complete."
     }
 
+    /// Debounces user search input before requesting autocomplete results.
     private func scheduleAutocomplete() {
         autocompleteTask?.cancel()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -481,12 +524,14 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Receives autocomplete updates from MapKit completer.
     nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
         Task { @MainActor in
             self.completionResults = Array(completer.results.prefix(8))
         }
     }
 
+    /// Handles autocomplete failures and updates status text.
     nonisolated func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: any Error) {
         Task { @MainActor in
             self.completionResults = []
@@ -494,6 +539,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Restores any previously armed destination alarm from persistence.
     private func restoreActiveAlarm() {
         guard
             let data = UserDefaults.standard.data(forKey: activeAlarmKey),
@@ -507,16 +553,19 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         statusText = "Restored armed alarm for \(destination.name)."
     }
 
+    /// Persists currently armed destination.
     private func persistActiveAlarm(_ destination: Destination) {
         if let data = try? JSONEncoder().encode(destination) {
             UserDefaults.standard.set(data, forKey: activeAlarmKey)
         }
     }
 
+    /// Clears persisted active alarm.
     private func clearActiveAlarm() {
         UserDefaults.standard.removeObject(forKey: activeAlarmKey)
     }
 
+    /// Restores saved Home, Work, and custom places.
     private func restorePlaces() {
         if
             let data = UserDefaults.standard.data(forKey: homePlaceKey),
@@ -546,6 +595,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Persists Home, Work, and custom places.
     private func persistPlaces() {
         if let homeData = try? JSONEncoder().encode(homePlace) {
             UserDefaults.standard.set(homeData, forKey: homePlaceKey)
@@ -558,6 +608,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Restores settings such as unit system and tone selection.
     private func restoreSettings() {
         if
             let rawUnit = UserDefaults.standard.string(forKey: settingsDistanceUnitKey),
@@ -576,6 +627,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Formats meter values according to selected unit system.
     private func formatDistance(meters: Double) -> String {
         switch distanceUnitSystem {
         case .metric:
@@ -593,12 +645,14 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Returns a destination copy with updated display name.
     private func renamedDestination(_ destination: Destination, name: String) -> Destination {
         var copy = destination
         copy.name = name
         return copy
     }
 
+    /// Detects whether Home/Work still points to placeholder default values.
     private func isPlaceholderSavedPlace(_ destination: Destination, quickPlace: QuickPlace) -> Bool {
         switch quickPlace {
         case .home:
@@ -610,6 +664,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         }
     }
 
+    /// Migrates older tone identifiers to current enum values.
     private func migrateLegacyToneID(_ legacyValue: String) -> AlarmService.ToneID? {
         switch legacyValue {
         case "toneTriTone", "toneOpening":
@@ -623,5 +678,17 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         default:
             return nil
         }
+    }
+}
+
+private extension MKMapItem {
+    /// Returns location coordinate from resolved map item.
+    var resolvedCoordinate: CLLocationCoordinate2D {
+        location.coordinate
+    }
+
+    /// Provides fallback title text from resolved map item.
+    var resolvedTitleFallback: String? {
+        name
     }
 }

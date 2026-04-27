@@ -9,6 +9,7 @@ import CoreLocation
 import MapKit
 import SwiftUI
 
+/// Main screen for selecting destinations and controlling arrival alarms.
 struct ContentView: View {
     @StateObject private var viewModel = AlarmViewModel()
     @State private var cameraPosition: MapCameraPosition = .automatic
@@ -23,6 +24,7 @@ struct ContentView: View {
     @State private var isShowingQuickPlaceAlert = false
     @FocusState private var isSearchFieldFocused: Bool
 
+    /// Bridges toggle interactions to explicit arm/disarm actions.
     private var alarmToggleBinding: Binding<Bool> {
         Binding(
             get: { viewModel.isArmed },
@@ -36,6 +38,7 @@ struct ContentView: View {
         )
     }
 
+    /// Builds map, destination controls, and alarm interaction UI.
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -84,9 +87,10 @@ struct ContentView: View {
                                     guard let item = await viewModel.resolveCompletion(completion) else { return }
                                     viewModel.useSearchResult(item)
                                     isSearchFieldFocused = false
+                                    let coordinate = mapItemCoordinate(item)
                                     cameraPosition = .region(
                                         MKCoordinateRegion(
-                                            center: item.placemark.coordinate,
+                                            center: coordinate,
                                             span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
                                         )
                                     )
@@ -204,7 +208,10 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(viewModel.isDestinationConfirmed ? .green : .secondary)
                         if let distanceText = viewModel.distanceRemainingDisplayText {
-                            Text("Distance remaining: \(distanceText)")
+                            Text("Road distance remaining: \(distanceText)")
+                                .foregroundStyle(.secondary)
+                            Text("Based on Apple Maps route distance.")
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -394,6 +401,11 @@ struct ContentView: View {
             }
         }
     }
+}
+
+/// Extracts coordinate from a selected map search result.
+private func mapItemCoordinate(_ item: MKMapItem) -> CLLocationCoordinate2D {
+    item.location.coordinate
 }
 
 #Preview {

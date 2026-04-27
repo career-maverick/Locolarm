@@ -1,10 +1,13 @@
 import CoreLocation
 import Combine
 import Foundation
+import MapKit
 
+/// Owns location permissions, geofence/live monitoring, and distance updates.
 final class LocationService: NSObject, ObservableObject {
     static let shared = LocationService()
 
+    /// App-friendly authorization states used by UI/view model.
     enum AuthorizationState: Equatable {
         case notDetermined
         case denied
@@ -23,6 +26,11 @@ final class LocationService: NSObject, ObservableObject {
     private var activeDestination: Destination?
     private var usePowerSaverOnly = false
     private var hasTriggeredArrival = false
+    private var routeDistanceTask: Task<Void, Never>?
+    private var lastRouteOrigin: CLLocationCoordinate2D?
+    private var lastRouteRequestDate: Date?
+    private let routeRefreshInterval: TimeInterval = 20
+    private let routeRecomputeMinMovementMeters: CLLocationDistance = 250
 
     private override init() {
         super.init()
@@ -34,15 +42,18 @@ final class LocationService: NSObject, ObservableObject {
         refreshAuthorizationState()
     }
 
+    /// Requests Always authorization for background-capable monitoring.
     func requestPermissions() {
         manager.requestAlwaysAuthorization()
     }
 
+    /// Requests a one-shot location fix when authorization allows it.
     func requestCurrentLocationFix() {
         guard authorizationState == .always || authorizationState == .whenInUse else { return }
         manager.requestLocation()
     }
 
+    /// Arms geofence tracking and optional live updates for the destination.
     func arm(
         destination: Destination,
         usePowerSaverOnly: Bool
@@ -79,7 +90,12 @@ final class LocationService: NSObject, ObservableObject {
         monitoringDescription = usePowerSaverOnly ? "Geofence only" : "Hybrid (geofence + live updates)"
     }
 
+    /// Clears all active region and location monitoring state.
     func disarm() {
+        routeDistanceTask?.cancel()
+        routeDistanceTask = nil
+        lastRouteOrigin = nil
+        lastRouteRequestDate = nil
         for region in manager.monitoredRegions {
             manager.stopMonitoring(for: region)
         }
@@ -91,6 +107,7 @@ final class LocationService: NSObject, ObservableObject {
         monitoringDescription = "Not armed"
     }
 
+    /// Maps CLLocationManager authorization into app-specific enum values.
     private func refreshAuthorizationState() {
         switch manager.authorizationStatus {
         case .notDetermined:
@@ -106,17 +123,79 @@ final class LocationService: NSObject, ObservableObject {
         }
     }
 
+    /// Processes latest location, updates distance, and triggers arrival checks.
     private func processLocation(_ location: CLLocation) {
         currentLocation = location
         guard let activeDestination, !hasTriggeredArrival else { return }
         let target = CLLocation(latitude: activeDestination.latitude, longitude: activeDestination.longitude)
-        let distance = location.distance(from: target)
-        lastDistanceMeters = distance
-        if distance <= activeDestination.radiusMeters {
+        let straightLineDistance = location.distance(from: target)
+        lastDistanceMeters = straightLineDistance
+        requestRoadDistanceIfNeeded(
+            from: location.coordinate,
+            to: activeDestination.coordinate,
+            fallbackDistanceMeters: straightLineDistance
+        )
+        if straightLineDistance <= activeDestination.radiusMeters {
             triggerArrivalIfNeeded()
         }
     }
 
+    /// Requests Apple Maps route distance with throttling and fallback behavior.
+    private func requestRoadDistanceIfNeeded(
+        from origin: CLLocationCoordinate2D,
+        to destination: CLLocationCoordinate2D,
+        fallbackDistanceMeters: CLLocationDistance
+    ) {
+        if let lastRouteOrigin {
+            let last = CLLocation(latitude: lastRouteOrigin.latitude, longitude: lastRouteOrigin.longitude)
+            let current = CLLocation(latitude: origin.latitude, longitude: origin.longitude)
+            let moved = current.distance(from: last)
+            let isTooSoon = (lastRouteRequestDate?.timeIntervalSinceNow ?? -.infinity) > -routeRefreshInterval
+            if moved < routeRecomputeMinMovementMeters && isTooSoon {
+                return
+            }
+        }
+
+        routeDistanceTask?.cancel()
+        lastRouteOrigin = origin
+        lastRouteRequestDate = Date()
+
+        routeDistanceTask = Task { [weak self] in
+            guard let self else { return }
+
+            let request = MKDirections.Request()
+            request.source = MKMapItem(
+                location: CLLocation(latitude: origin.latitude, longitude: origin.longitude),
+                address: nil
+            )
+            request.destination = MKMapItem(
+                location: CLLocation(latitude: destination.latitude, longitude: destination.longitude),
+                address: nil
+            )
+            request.transportType = .automobile
+
+            do {
+                let response = try await MKDirections(request: request).calculate()
+                guard !Task.isCancelled else { return }
+                if let bestDistance = response.routes.first?.distance {
+                    await MainActor.run {
+                        self.lastDistanceMeters = bestDistance
+                    }
+                } else {
+                    await MainActor.run {
+                        self.lastDistanceMeters = fallbackDistanceMeters
+                    }
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.lastDistanceMeters = fallbackDistanceMeters
+                }
+            }
+        }
+    }
+
+    /// Invokes arrival callback once per armed session.
     private func triggerArrivalIfNeeded() {
         guard !hasTriggeredArrival else { return }
         hasTriggeredArrival = true
@@ -125,31 +204,37 @@ final class LocationService: NSObject, ObservableObject {
 }
 
 extension LocationService: CLLocationManagerDelegate {
+    /// Handles runtime authorization changes.
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         refreshAuthorizationState()
         requestCurrentLocationFix()
     }
 
+    /// Receives location updates from Core Location.
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         processLocation(location)
     }
 
+    /// Receives Core Location errors from one-shot/following requests.
     func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
         // requestLocation requires this delegate callback to exist.
         monitoringDescription = "Location error: \(error.localizedDescription)"
     }
 
+    /// Triggers arrival when entering the monitored destination region.
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         triggerArrivalIfNeeded()
     }
 
+    /// Handles initial region-state callback after monitoring begins.
     func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
         if state == .inside {
             triggerArrivalIfNeeded()
         }
     }
 
+    /// Handles region monitoring failures.
     func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: any Error) {
         monitoringDescription = "Monitoring failed: \(error.localizedDescription)"
     }
