@@ -29,9 +29,22 @@
 		29B532F52F9DF8E40013664C /* LocolarmUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LocolarmUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		29B533092F9DF93B0013664C /* Exceptions for "Locolarm" folder in "Locolarm" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 29B532DD2F9DF8E10013664C /* Locolarm */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		29B532E02F9DF8E10013664C /* Locolarm */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				29B533092F9DF93B0013664C /* Exceptions for "Locolarm" folder in "Locolarm" target */,
+			);
 			path = Locolarm;
 			sourceTree = "<group>";
 		};
@@ -400,6 +413,9 @@
 				DEVELOPMENT_TEAM = 7G448489P5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Locolarm/Info.plist;
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Locolarm needs background access to wake you up even when the app is closed and your phone is locked in your pocket";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Locolarm needs your location to determine when you are approaching your destination";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -432,6 +448,9 @@
 				DEVELOPMENT_TEAM = 7G448489P5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Locolarm/Info.plist;
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Locolarm needs background access to wake you up even when the app is closed and your phone is locked in your pocket";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Locolarm needs your location to determine when you are approaching your destination";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
