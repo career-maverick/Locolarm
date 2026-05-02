@@ -11,6 +11,7 @@ import SwiftUI
 
 /// Main screen for selecting destinations and controlling arrival alarms.
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var viewModel = AlarmViewModel()
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var mapCenterCoordinate = CLLocationCoordinate2D(latitude: 12.9716, longitude: 77.5946)
@@ -214,13 +215,23 @@ struct ContentView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
+                        if viewModel.isArmed, viewModel.userEtaFallbackEnabled, let etaLine = viewModel.routeEtaFallbackDeadlineDisplayText {
+                            Text(etaLine)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
-                    if case .ringing = viewModel.alarmState {
+                    if case .ringing(let trigger) = viewModel.alarmState {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Alarm is ringing")
                                 .font(.headline)
                                 .foregroundStyle(.red)
+                            if trigger == .etaFallbackRouteTimer, let name = viewModel.selectedDestination?.name {
+                                Text(AlarmService.etaFallbackWarningBannerText(destinationName: name))
+                                    .font(.subheadline)
+                                    .foregroundStyle(.orange)
+                            }
                             HStack {
                                 Button("Snooze 5 min") { viewModel.snoozeAlarm(minutes: 5) }
                                     .buttonStyle(.borderedProminent)
@@ -233,6 +244,11 @@ struct ContentView: View {
                 .padding()
             }
             .navigationTitle("Location Alarm")
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    AlarmService.shared.recoverActiveAlarmPlaybackIfNeeded()
+                }
+            }
             .onChange(of: viewModel.currentLocationCoordinate?.latitude ?? 0) { _, _ in
                 guard let coordinate = viewModel.currentLocationCoordinate, !hasCenteredOnCurrentLocation else { return }
                 hasCenteredOnCurrentLocation = true
@@ -260,6 +276,18 @@ struct ContentView: View {
                     Form {
                         Section("Tracking") {
                             Toggle("Power Saver mode (geofence only)", isOn: $viewModel.userPowerSaverMode)
+                            Toggle(
+                                "ETA fallback when GPS is lost",
+                                isOn: Binding(
+                                    get: { viewModel.userEtaFallbackEnabled },
+                                    set: { viewModel.updateEtaFallbackEnabled($0) }
+                                )
+                            )
+                            Text(
+                                "If GPS drops (tunnel, parking garage), ring using your last Apple Maps ETA when the timer runs out. Less precise than GPS — you will see a warning."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                             if viewModel.lowPowerModeActive {
                                 Text("Low Power Mode is ON, so geofence-only is auto-enabled.")
                                     .font(.caption)
@@ -279,7 +307,7 @@ struct ContentView: View {
                             .pickerStyle(.segmented)
                         }
 
-                        Section("Alarm Tone") {
+                        Section {
                             Picker("Sound", selection: Binding(
                                 get: { viewModel.selectedToneID },
                                 set: { viewModel.updateSelectedToneID($0) }
@@ -288,6 +316,13 @@ struct ContentView: View {
                                     Text(tone.displayName).tag(tone)
                                 }
                             }
+                        } header: {
+                            Text("Alarm Tone")
+                        } footer: {
+                            Text(
+                                "The alarm loops until you dismiss or snooze. It continues when the app is in the background or the screen is locked (pause/stop from Lock Screen or Control Center)."
+                            )
+                            .font(.caption)
                         }
                     }
                     .navigationTitle("Settings")

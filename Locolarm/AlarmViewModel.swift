@@ -84,6 +84,8 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
     @Published private(set) var locationAuthorization: LocationService.AuthorizationState = .notDetermined
     @Published private(set) var distanceRemaining: Double?
     @Published private(set) var currentLocationCoordinate: CLLocationCoordinate2D?
+    @Published var userEtaFallbackEnabled = true
+    @Published private(set) var routeEtaFallbackDeadline: Date?
 
     var effectivePowerSaverMode: Bool {
         userPowerSaverMode || lowPowerModeActive
@@ -99,10 +101,12 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
     private let customPlacesKey = "saved-custom-places"
     private let settingsDistanceUnitKey = "settings-distance-unit"
     private let settingsToneIDKey = "settings-tone-id"
+    private let settingsEtaFallbackKey = "settings-eta-fallback-enabled"
     private var observerTask: Task<Void, Never>?
     private var snoozeTask: Task<Void, Never>?
     private var autocompleteTask: Task<Void, Never>?
     private var lastAppliedPowerSaverMode = false
+    private var etaFallbackNotificationObserver: NSObjectProtocol?
     private let completer = MKLocalSearchCompleter()
 
     /// Configures services, restores persisted state, and starts observers.
@@ -116,7 +120,18 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         completer.resultTypes = .address
 
         locationService.onArrival = { [weak self] in
-            self?.handleArrival()
+            self?.handleGpsArrival()
+        }
+        locationService.onEtaFallbackArrival = { [weak self] in
+            self?.handleEtaFallbackArrival()
+        }
+
+        etaFallbackNotificationObserver = NotificationCenter.default.addObserver(
+            forName: .locolarmEtaFallbackDeadline,
+            object: nil,
+            queue: .main
+        ) { _ in
+            LocationService.shared.handleEtaFallbackDeadlineNotificationEvent()
         }
 
         restorePlaces()
@@ -134,6 +149,9 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         observerTask?.cancel()
         snoozeTask?.cancel()
         autocompleteTask?.cancel()
+        if let etaFallbackNotificationObserver {
+            NotificationCenter.default.removeObserver(etaFallbackNotificationObserver)
+        }
     }
 
     /// Resolves an autocomplete result into a concrete map item.
@@ -214,7 +232,8 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
 
         locationService.arm(
             destination: destination,
-            usePowerSaverOnly: effectivePowerSaverMode
+            usePowerSaverOnly: effectivePowerSaverMode,
+            etaFallbackEnabled: userEtaFallbackEnabled
         )
         lastAppliedPowerSaverMode = effectivePowerSaverMode
         isArmed = true
@@ -260,17 +279,28 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         disarmAlarm()
     }
 
-    /// Handles arrival callback by triggering alarm service.
-    private func handleArrival() {
+    /// Handles arrival from geofence or distance (precise path).
+    private func handleGpsArrival() {
         guard let destination = selectedDestination else { return }
-        alarmService.triggerArrivalAlarm(destinationName: destination.name)
+        alarmService.triggerArrivalAlarm(destinationName: destination.name, reason: .gpsConfirmed)
         statusText = "Arrived near \(destination.name). Alarm started."
+    }
+
+    /// Handles arrival from ETA dead reckoning when GPS is stale and the route timer elapses.
+    private func handleEtaFallbackArrival() {
+        guard let destination = selectedDestination else { return }
+        alarmService.triggerArrivalAlarm(destinationName: destination.name, reason: .etaFallbackRouteTimer)
+        statusText = "ETA-based alarm for \(destination.name) — check your location (GPS was unreliable)."
     }
 
     /// Re-arms destination tracking after snooze period finishes.
     private func rearmAfterSnooze() {
         guard let destination = selectedDestination else { return }
-        locationService.arm(destination: destination, usePowerSaverOnly: effectivePowerSaverMode)
+        locationService.arm(
+            destination: destination,
+            usePowerSaverOnly: effectivePowerSaverMode,
+            etaFallbackEnabled: userEtaFallbackEnabled
+        )
         lastAppliedPowerSaverMode = effectivePowerSaverMode
         isArmed = true
         statusText = "Snooze ended. Alarm re-armed."
@@ -288,7 +318,11 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
                     nextMode != self.lastAppliedPowerSaverMode,
                     let destination = self.selectedDestination
                 {
-                    self.locationService.arm(destination: destination, usePowerSaverOnly: self.effectivePowerSaverMode)
+                    self.locationService.arm(
+                        destination: destination,
+                        usePowerSaverOnly: self.effectivePowerSaverMode,
+                        etaFallbackEnabled: self.userEtaFallbackEnabled
+                    )
                     self.lastAppliedPowerSaverMode = nextMode
                 }
             }
@@ -321,6 +355,13 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
                 self.alarmState = value
             }
         }
+
+        Task { [weak self] in
+            guard let self else { return }
+            for await value in locationService.$etaFallbackDeadline.values {
+                self.routeEtaFallbackDeadline = value
+            }
+        }
     }
 
     /// Title text for a search completion row.
@@ -342,6 +383,15 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
     var distanceRemainingDisplayText: String? {
         guard let distanceRemaining else { return nil }
         return formatDistance(meters: distanceRemaining)
+    }
+
+    /// Short label for the current route-ETA deadline used by dead-reckoning fallback.
+    var routeEtaFallbackDeadlineDisplayText: String? {
+        guard let routeEtaFallbackDeadline else { return nil }
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return "Route ETA timer: ~\(formatter.string(from: routeEtaFallbackDeadline))"
     }
 
     /// Alarm tones user can choose from in settings.
@@ -384,6 +434,19 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
     func updateDistanceUnitSystem(_ newValue: DistanceUnitSystem) {
         distanceUnitSystem = newValue
         UserDefaults.standard.set(newValue.rawValue, forKey: settingsDistanceUnitKey)
+    }
+
+    /// Persists whether ETA-based fallback is allowed when GPS is lost or unreliable.
+    func updateEtaFallbackEnabled(_ enabled: Bool) {
+        userEtaFallbackEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: settingsEtaFallbackKey)
+        if isArmed, let destination = selectedDestination {
+            locationService.arm(
+                destination: destination,
+                usePowerSaverOnly: effectivePowerSaverMode,
+                etaFallbackEnabled: enabled
+            )
+        }
     }
 
     /// Persists selected alarm tone and applies it immediately.
@@ -624,6 +687,10 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
                 selectedToneID = migrated
                 UserDefaults.standard.set(migrated.rawValue, forKey: settingsToneIDKey)
             }
+        }
+
+        if UserDefaults.standard.object(forKey: settingsEtaFallbackKey) != nil {
+            userEtaFallbackEnabled = UserDefaults.standard.bool(forKey: settingsEtaFallbackKey)
         }
     }
 

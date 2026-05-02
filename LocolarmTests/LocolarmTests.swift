@@ -47,12 +47,12 @@ struct LocolarmTests {
         #expect(Destination.savedWork.name == "Work")
     }
 
-    @Test("Tone metadata maps to expected bundled files")
+    @Test("Tone metadata maps to expected bundled loop files")
     func toneMetadataMappings() {
-        #expect(AlarmService.ToneID.systemDefault.bundledFilename == nil)
-        #expect(AlarmService.ToneID.toneBeacon.bundledFilename == "tone-beacon.caf")
-        #expect(AlarmService.ToneID.tonePulse.bundledFilename == "tone-pulse.caf")
-        #expect(AlarmService.ToneID.toneEcho.bundledFilename == "tone-echo.caf")
+        #expect(AlarmService.ToneID.systemDefault.bundledFilename == "alarm-default.wav")
+        #expect(AlarmService.ToneID.toneBeacon.bundledFilename == "tone-beacon.wav")
+        #expect(AlarmService.ToneID.tonePulse.bundledFilename == "tone-pulse.wav")
+        #expect(AlarmService.ToneID.toneEcho.bundledFilename == "tone-echo.wav")
     }
 
     @Test("Tone display names are user friendly")
@@ -75,5 +75,11 @@ struct LocolarmTests {
         #expect(AlarmViewModel.QuickPlace.work.title == "Work")
         #expect(AlarmViewModel.QuickPlace.recentCustom.title == "Recent")
         #expect(AlarmViewModel.QuickPlace.add.title == "+")
+    }
+
+    @Test("ETA fallback suppress distance uses radius factor with floor")
+    func etaFallbackSuppressDistanceScalesWithRadius() {
+        #expect(ETAFallbackConstants.minimumSuppressDistanceMeters(arrivalRadiusMeters: 200) == 800)
+        #expect(ETAFallbackConstants.minimumSuppressDistanceMeters(arrivalRadiusMeters: 500) == 1250)
     }
 }
