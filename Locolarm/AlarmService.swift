@@ -1,8 +1,11 @@
-import AVFAudio
+import ActivityKit
+import AlarmKit
 import AudioToolbox
+import AVFAudio
 import Combine
 import Foundation
 import MediaPlayer
+import SwiftUI
 import UserNotifications
 
 /// Handles alarm sound playback with background-capable audio session, lock-screen controls, and recovery after interruptions.
@@ -10,6 +13,12 @@ import UserNotifications
 /// Requires **Audio, AirPlay, and Picture in Picture** (`audio`) in `UIBackgroundModes` so looping playback continues when the app is not in the foreground.
 final class AlarmService: ObservableObject {
     static let shared = AlarmService()
+
+    /// Stable AlarmKit identifier for immediate arrival alerts (rescheduled on each trigger).
+    static let arrivalAlarmKitID = UUID(uuidString: "B1111111-1111-4111-8111-111111111111")!
+
+    /// Stable AlarmKit identifier for the ETA fallback deadline alarm.
+    static let etaDeadlineAlarmKitID = UUID(uuidString: "C2222222-2222-4222-8222-222222222222")!
 
     /// Distinguishes precise GPS/geofence arrival from ETA route-timer fallback (dead reckoning).
     enum ArrivalTriggerReason: Equatable {
@@ -61,6 +70,9 @@ final class AlarmService: ObservableObject {
 
     @Published private(set) var state: State = .idle
 
+    /// Mirrors `AlarmManager.shared.authorizationState` for settings UI.
+    @Published private(set) var alarmKitAuthorization: AlarmManager.AuthorizationState = .notDetermined
+
     private var beepTimer: Timer?
     private var audioPlayer: AVAudioPlayer?
     private let notificationCenter = UNUserNotificationCenter.current()
@@ -70,6 +82,7 @@ final class AlarmService: ObservableObject {
     private var routeChangeObserver: NSObjectProtocol?
 
     private init() {
+        alarmKitAuthorization = AlarmManager.shared.authorizationState
         installAudioSessionObservers()
     }
 
@@ -86,11 +99,28 @@ final class AlarmService: ObservableObject {
         notificationCenter.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
+    func refreshAlarmKitAuthorizationFromSystem() {
+        alarmKitAuthorization = AlarmManager.shared.authorizationState
+    }
+
+    /// Prompts for AlarmKit access when still undetermined (typically when arming).
+    func requestAlarmKitAuthorizationIfNeeded() async {
+        if AlarmManager.shared.authorizationState == .notDetermined {
+            _ = try? await AlarmManager.shared.requestAuthorization()
+        }
+        await MainActor.run {
+            refreshAlarmKitAuthorizationFromSystem()
+        }
+    }
+
     func triggerArrivalAlarm(destinationName: String, reason: ArrivalTriggerReason = .gpsConfirmed) {
         lastAlarmDestinationName = destinationName
         state = .ringing(reason)
         startAlarmSoundLoop(destinationName: destinationName)
         scheduleArrivalNotification(destinationName: destinationName, reason: reason)
+        Task { @MainActor in
+            await scheduleArrivalAlarmKit(destinationName: destinationName, reason: reason)
+        }
     }
 
     func setTone(_ tone: ToneID) {
@@ -98,6 +128,7 @@ final class AlarmService: ObservableObject {
     }
 
     func dismissAlarm() {
+        cancelArrivalAlarmKitIfNeeded()
         stopAlarmSoundLoopTeardownSession()
         teardownRemoteTransportAndNowPlaying()
         state = .idle
@@ -105,6 +136,7 @@ final class AlarmService: ObservableObject {
     }
 
     func snooze(minutes: Int = 5) {
+        cancelArrivalAlarmKitIfNeeded()
         stopAlarmSoundLoopTeardownSession()
         teardownRemoteTransportAndNowPlaying()
         let until = Date().addingTimeInterval(TimeInterval(minutes * 60))
@@ -210,12 +242,12 @@ final class AlarmService: ObservableObject {
         do {
             try configureAlarmAudioSession()
         } catch {
-            startLegacyTimerOnlyLoop()
+            startFallbackPlaybackRetryLoop(destinationName: destinationName)
             return
         }
 
         guard let url = resolveBundledAlarmSoundURL() else {
-            startLegacyTimerOnlyLoop()
+            startFallbackPlaybackRetryLoop(destinationName: destinationName)
             return
         }
 
@@ -224,7 +256,7 @@ final class AlarmService: ObservableObject {
             player.numberOfLoops = -1
             player.prepareToPlay()
             guard player.play() else {
-                startLegacyTimerOnlyLoop()
+                startFallbackPlaybackRetryLoop(destinationName: destinationName)
                 return
             }
             audioPlayer = player
@@ -236,7 +268,7 @@ final class AlarmService: ObservableObject {
             }
         } catch {
             audioPlayer = nil
-            startLegacyTimerOnlyLoop()
+            startFallbackPlaybackRetryLoop(destinationName: destinationName)
         }
     }
 
@@ -250,16 +282,49 @@ final class AlarmService: ObservableObject {
         return Bundle.main.url(forResource: "alarm-default", withExtension: "wav")
     }
 
-    /// Last-resort path when bundled files are missing (should not occur in release builds with assets).
-    private func startLegacyTimerOnlyLoop() {
+    /// Retries bundled `AVAudioPlayer` playback on a timer — avoids `AudioServicesPlaySystemSound`, which honors the silent switch.
+    private func startFallbackPlaybackRetryLoop(destinationName: String) {
         beepTimer?.invalidate()
-        AudioServicesPlaySystemSound(selectedTone.fallbackSystemSoundID)
-        let timer = Timer(fire: Date(), interval: 1.5, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            AudioServicesPlaySystemSound(self.selectedTone.fallbackSystemSoundID)
+        var attempts = 0
+        let timer = Timer(fire: Date(), interval: 0.7, repeats: true) { [weak self] timerRef in
+            guard let self else {
+                timerRef.invalidate()
+                return
+            }
+            attempts += 1
+            if attempts > 60 || !self.checkRingingForFallbackTimer() {
+                timerRef.invalidate()
+                self.beepTimer = nil
+                return
+            }
+            self.attemptBundledPlaybackRecovery(destinationName: destinationName)
+            if self.audioPlayer?.isPlaying == true {
+                timerRef.invalidate()
+                self.beepTimer = nil
+            }
         }
-        RunLoop.main.add(timer, forMode: .common)
         beepTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func checkRingingForFallbackTimer() -> Bool {
+        if case .ringing = state { return true }
+        return false
+    }
+
+    private func attemptBundledPlaybackRecovery(destinationName: String) {
+        guard let url = resolveBundledAlarmSoundURL() else { return }
+        do {
+            try configureAlarmAudioSession()
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.numberOfLoops = -1
+            player.prepareToPlay()
+            guard player.play() else { return }
+            audioPlayer = player
+            if case .ringing(let reason) = state {
+                setupNowPlayingAndRemoteControls(destinationName: destinationName, reason: reason)
+            }
+        } catch {}
     }
 
     private func stopAlarmSoundLoopTeardownSession() {
@@ -343,5 +408,76 @@ final class AlarmService: ObservableObject {
         guard Bundle.main.url(forResource: (filename as NSString).deletingPathExtension, withExtension: (filename as NSString).pathExtension) != nil
         else { return .default }
         return UNNotificationSound(named: UNNotificationSoundName(rawValue: filename))
+    }
+
+    // MARK: - AlarmKit
+
+    private func cancelArrivalAlarmKitIfNeeded() {
+        try? AlarmManager.shared.cancel(id: Self.arrivalAlarmKitID)
+    }
+
+    func cancelEtaDeadlineAlarmKit() {
+        try? AlarmManager.shared.cancel(id: Self.etaDeadlineAlarmKitID)
+    }
+
+    /// System ETA deadline alert (breaks through Silent / Focus when authorized).
+    @MainActor
+    func scheduleEtaDeadlineAlarmKit(deadline: Date, destinationLabel: String) async {
+        guard AlarmManager.shared.authorizationState == .authorized else { return }
+        guard deadline.timeIntervalSinceNow > 2 else { return }
+
+        let title = LocalizedStringResource(stringLiteral: "Locolarm — ETA timer (\(destinationLabel))")
+        let alert = AlarmPresentation.Alert(title: title)
+        let attrs = AlarmAttributes<LocolarmAlarmMetadata>(
+            presentation: AlarmPresentation(alert: alert),
+            metadata: nil,
+            tintColor: .orange
+        )
+        let sound = Self.alertSound(for: selectedTone)
+        let config = AlarmManager.AlarmConfiguration<LocolarmAlarmMetadata>.alarm(
+            schedule: .fixed(deadline),
+            attributes: attrs,
+            stopIntent: EvaluateEtaFallbackAlarmIntent(),
+            sound: sound
+        )
+        try? AlarmManager.shared.cancel(id: Self.etaDeadlineAlarmKitID)
+        _ = try? await AlarmManager.shared.schedule(id: Self.etaDeadlineAlarmKitID, configuration: config)
+    }
+
+    @MainActor
+    private func scheduleArrivalAlarmKit(destinationName: String, reason: ArrivalTriggerReason) async {
+        guard AlarmManager.shared.authorizationState == .authorized else { return }
+
+        let titleText: String
+        switch reason {
+        case .gpsConfirmed:
+            titleText = "Arrived near \(destinationName)"
+        case .etaFallbackRouteTimer:
+            titleText = "Approximate arrival — \(destinationName)"
+        }
+        let alert = AlarmPresentation.Alert(title: LocalizedStringResource(stringLiteral: titleText))
+        let attrs = AlarmAttributes<LocolarmAlarmMetadata>(
+            presentation: AlarmPresentation(alert: alert),
+            metadata: nil,
+            tintColor: .orange
+        )
+        let sound = Self.alertSound(for: selectedTone)
+        let fireDate = Date().addingTimeInterval(1.5)
+        let config = AlarmManager.AlarmConfiguration<LocolarmAlarmMetadata>.alarm(
+            schedule: .fixed(fireDate),
+            attributes: attrs,
+            stopIntent: StopArrivalAlarmIntent(),
+            sound: sound
+        )
+        try? AlarmManager.shared.cancel(id: Self.arrivalAlarmKitID)
+        _ = try? await AlarmManager.shared.schedule(id: Self.arrivalAlarmKitID, configuration: config)
+    }
+
+    private static func alertSound(for tone: ToneID) -> AlertConfiguration.AlertSound {
+        let base = (tone.bundledFilename as NSString).deletingPathExtension
+        if Bundle.main.url(forResource: base, withExtension: "wav") != nil {
+            return .named(base)
+        }
+        return .default
     }
 }

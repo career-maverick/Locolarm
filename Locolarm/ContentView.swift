@@ -274,6 +274,12 @@ struct ContentView: View {
             .sheet(isPresented: $isShowingSettings) {
                 NavigationStack {
                     Form {
+                        Section("System alarms") {
+                            Text(viewModel.alarmKitAuthorizationFootnote)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
                         Section("Tracking") {
                             Toggle("Power Saver mode (geofence only)", isOn: $viewModel.userPowerSaverMode)
                             Toggle(
@@ -320,13 +326,16 @@ struct ContentView: View {
                             Text("Alarm Tone")
                         } footer: {
                             Text(
-                                "The alarm loops until you dismiss or snooze. It continues when the app is in the background or the screen is locked (pause/stop from Lock Screen or Control Center)."
+                                "The alarm loops until you dismiss or snooze. When AlarmKit is allowed, iOS also shows a system arrival alarm that rings through Silent mode and Focus. Background playback continues when the screen is locked (pause/stop from Lock Screen or Control Center)."
                             )
                             .font(.caption)
                         }
                     }
                     .navigationTitle("Settings")
                     .navigationBarTitleDisplayMode(.inline)
+                    .onAppear {
+                        viewModel.syncAlarmKitAuthorizationFromSystem()
+                    }
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button("Done") {

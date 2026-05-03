@@ -13,6 +13,7 @@ final class LocolarmAppDelegate: NSObject, UIApplicationDelegate {
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         AlarmService.shared.recoverActiveAlarmPlaybackIfNeeded()
+        LocationService.shared.handleEtaFallbackDeadlineNotificationEvent()
     }
 }
 

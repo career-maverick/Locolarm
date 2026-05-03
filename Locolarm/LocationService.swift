@@ -245,7 +245,7 @@ final class LocationService: NSObject, ObservableObject {
         content.title = "Locolarm"
         content.body = "Your scheduled arrival time has passed. Open the app to hear the alarm if needed."
         content.interruptionLevel = .timeSensitive
-        content.sound = .default
+        content.sound = nil
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: interval, repeats: false)
         let request = UNNotificationRequest(
@@ -254,12 +254,18 @@ final class LocationService: NSObject, ObservableObject {
             trigger: trigger
         )
         UNUserNotificationCenter.current().add(request)
+
+        let destinationLabel = activeDestination?.name ?? "Destination"
+        Task { @MainActor in
+            await AlarmService.shared.scheduleEtaDeadlineAlarmKit(deadline: deadline, destinationLabel: destinationLabel)
+        }
     }
 
     private func cancelEtaFallbackNotificationScheduling() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(
             withIdentifiers: [ETAFallbackConstants.deadlineNotificationIdentifier]
         )
+        AlarmService.shared.cancelEtaDeadlineAlarmKit()
     }
 
     private func restartEtaEvaluationTimerIfNeeded() {

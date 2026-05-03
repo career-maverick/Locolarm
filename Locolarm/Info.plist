@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Locolarm rings a system arrival alarm when you reach your destination or when the ETA fallback timer finishes, including when Silent mode or Focus is on.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

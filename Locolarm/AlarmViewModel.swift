@@ -1,7 +1,8 @@
+import AlarmKit
+import Combine
 import CoreLocation
 import Foundation
 import MapKit
-import Combine
 
 @MainActor
 /// Coordinates destination selection, alarm lifecycle, persistence, and UI state.
@@ -80,6 +81,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
     @Published private(set) var pendingQuickPlaceSave: PendingQuickPlaceSave?
 
     @Published private(set) var alarmState: AlarmService.State = .idle
+    @Published private(set) var alarmKitAuthorization: AlarmManager.AuthorizationState = .notDetermined
     @Published private(set) var lowPowerModeActive = false
     @Published private(set) var locationAuthorization: LocationService.AuthorizationState = .notDetermined
     @Published private(set) var distanceRemaining: Double?
@@ -141,6 +143,7 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         locationService.requestCurrentLocationFix()
         alarmService.requestNotificationPermission()
         alarmService.setTone(selectedToneID)
+        alarmKitAuthorization = alarmService.alarmKitAuthorization
         bindObservers()
     }
 
@@ -239,6 +242,9 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
         isArmed = true
         statusText = "Alarm armed for \(destination.name)."
         persistActiveAlarm(destination)
+        Task {
+            await alarmService.requestAlarmKitAuthorizationIfNeeded()
+        }
     }
 
     /// Disarms monitoring and clears active alarm state.
@@ -358,6 +364,20 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
 
         Task { [weak self] in
             guard let self else { return }
+            for await value in alarmService.$alarmKitAuthorization.values {
+                self.alarmKitAuthorization = value
+            }
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            for await _ in AlarmManager.shared.authorizationUpdates {
+                self.alarmService.refreshAlarmKitAuthorizationFromSystem()
+            }
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
             for await value in locationService.$etaFallbackDeadline.values {
                 self.routeEtaFallbackDeadline = value
             }
@@ -397,6 +417,20 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
     /// Alarm tones user can choose from in settings.
     var availableTones: [AlarmService.ToneID] {
         AlarmService.ToneID.allCases
+    }
+
+    /// User-facing guidance for AlarmKit (Silent / Focus bypass).
+    var alarmKitAuthorizationFootnote: String {
+        switch alarmKitAuthorization {
+        case .authorized:
+            return "System alarms can ring through Silent mode and Focus."
+        case .denied:
+            return "Alarms are turned off for Locolarm in Settings. Enable Alarms so alerts can break through Silent mode and Focus."
+        case .notDetermined:
+            return "The first time you arm an alarm, iOS may ask to allow Locolarm to schedule alarms."
+        @unknown default:
+            return "Alarm permission status is unknown. Check Settings → Locolarm → Alarms."
+        }
     }
 
     /// Most recently used custom place, if any.
@@ -450,6 +484,11 @@ final class AlarmViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDe
     }
 
     /// Persists selected alarm tone and applies it immediately.
+    /// Refreshes AlarmKit authorization after returning from Settings.
+    func syncAlarmKitAuthorizationFromSystem() {
+        alarmService.refreshAlarmKitAuthorizationFromSystem()
+    }
+
     func updateSelectedToneID(_ newTone: AlarmService.ToneID) {
         selectedToneID = newTone
         UserDefaults.standard.set(newTone.rawValue, forKey: settingsToneIDKey)
